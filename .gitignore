@@ -1,3 +1,7 @@
+*.swp
+*.swo
+install_manifest.txt
+*doxygen*.db
 aclocal.m4
 autom4te.cache
 config.h
