@@ -1,8 +1,11 @@
-set (SOURCES jason.c)
-set (TARGET jason)
+set (SOURCES halft0ne.c)
+set (TARGET halft0ne)
+
+include_directories(${Cairo_INCLUDE_DIR})
+set(LIBS ${LIBS} ${Cairo_LIBRARY})
 
 if (MSVC)
-  set_source_files_properties (jason.c PROPERTIES LANGUAGE CXX)
+  set_source_files_properties (halft0ne.c PROPERTIES LANGUAGE CXX)
   set (SOURCES ${SOURCES} ${FREI0R_DEF})
 endif (MSVC)
 

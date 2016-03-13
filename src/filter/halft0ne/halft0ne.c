@@ -3,7 +3,15 @@
 #include <assert.h>
 #include <stdio.h>
 
+#include <cairo.h>
 #include "frei0r.h"
+
+// ARGB color model
+#define R(v) (((v) >> 16) & 0xFF)
+#define G(v) (((v) >> 8)  & 0xFF)
+#define B(v) ((v) & 0xFF)
+#define RGB(r, g, b) ((r) << 16) | ((g) << 8) | (b)
+#define PIXEL_AT(b, x, y) &b[(y) * inst->width + (x)]
 
 typedef unsigned int uint;
 
@@ -29,7 +37,7 @@ void f0r_deinit()
 
 void f0r_get_plugin_info(f0r_plugin_info_t* inverterInfo)
 {
-    inverterInfo->name = "Jason";
+    inverterInfo->name = "halft0ne";
     inverterInfo->author = "Jason Stich";
     inverterInfo->plugin_type = F0R_PLUGIN_TYPE_FILTER;
     inverterInfo->color_model = F0R_COLOR_MODEL_RGBA8888;
@@ -37,7 +45,8 @@ void f0r_get_plugin_info(f0r_plugin_info_t* inverterInfo)
     inverterInfo->major_version = 0; 
     inverterInfo->minor_version = 9; 
     inverterInfo->num_params =  0; 
-    inverterInfo->explanation = "Does whatever the fuck I want it to";
+    inverterInfo->explanation =
+        "Creates a halftone effect for your viewing pleasure.";
 }
 
 void f0r_get_param_info(f0r_param_info_t* info, int param_index)
@@ -68,6 +77,48 @@ void f0r_get_param_value(f0r_instance_t instance,
 			 f0r_param_t param, int param_index)
 { /* no params */ }
 
+void rgb_to_cmyk(uint32_t* rgb, float* cmyk)
+{
+    static const uint NUM_COLORS_RGB = 3;
+    static const uint R = 0;
+    static const uint G = 1;
+    static const uint B = 2;
+    static const uint C = 0;
+    static const uint M = 1;
+    static const uint Y = 2;
+    static const uint K = 3;
+    
+    float rgbPrime[NUM_COLORS_RGB];
+    uint indexMax = 0, i;
+    for (i=0; i<NUM_COLORS_RGB; i++)
+    {
+        rgbPrime[i] = (float)rgb[i] / 255.0;
+        if (rgbPrime[i] > rgbPrime[indexMax])
+        {
+            indexMax = i;
+        }
+    }
+    cmyk[K] = 1.0 - rgbPrime[indexMax];
+    cmyk[C] = (1.0-rgbPrime[R]-cmyk[K]) / (1.0-cmyk[K]);
+    cmyk[M] = (1.0-rgbPrime[G]-cmyk[K]) / (1.0-cmyk[K]);
+    cmyk[Y] = (1.0-rgbPrime[B]-cmyk[K]) / (1.0-cmyk[K]);
+}
+
+void draw_circle(unsigned char* pBuffer,
+    plugin_instance_t* inst, uint x, uint y, uint radius, uint32_t color)
+{
+    
+    assert( ( inst->width * sizeof(uint32_t) ) ==
+            cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, inst->width) );
+
+    cairo_surface_t* pSurface = cairo_image_surface_create_for_data(
+        pBuffer,
+        CAIRO_FORMAT_ARGB32,
+        inst->width,
+        inst->height,
+        inst->width * sizeof(uint32_t));
+}
+
 void f0r_update(f0r_instance_t instance, double time,
 		const uint32_t* inframe, uint32_t* outframe)
 {
@@ -88,12 +139,6 @@ void f0r_update(f0r_instance_t instance, double time,
     {
         for (sy=0; sy<nsy; sy++)
         {
-            // ARGB color model
-            #define R(v) ((v >> 16) & 0xFF)
-            #define G(v) ((v >> 8)  & 0xFF)
-            #define B(v) (v & 0xFF)
-            #define RGB(r, g, b) (r << 16) | (g << 8) | b
-            #define PIXEL_AT(b, x, y) &b[(y) * inst->width + (x)]
             uint32_t x0 = sx*sw;
             uint32_t y0 = sy*sh;
             uint32_t avg = *PIXEL_AT(inframe, x0, y0);
