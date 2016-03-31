@@ -2,7 +2,8 @@
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
-
+#include <stdlib.h>
+#include <math.h>
 #include <cairo.h>
 #include "frei0r.h"
 
@@ -15,7 +16,7 @@
 
 typedef unsigned int uint;
 
-static const uint SIZE = 5;
+static const uint SIZE = 30;
 
 typedef struct inverter_instance
 {
@@ -104,21 +105,6 @@ void rgb_to_cmyk(uint32_t* rgb, float* cmyk)
     cmyk[Y] = (1.0-rgbPrime[B]-cmyk[K]) / (1.0-cmyk[K]);
 }
 
-void draw_circle(unsigned char* pBuffer,
-    plugin_instance_t* inst, uint x, uint y, uint radius, uint32_t color)
-{
-    
-    assert( ( inst->width * sizeof(uint32_t) ) ==
-            cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, inst->width) );
-
-    cairo_surface_t* pSurface = cairo_image_surface_create_for_data(
-        pBuffer,
-        CAIRO_FORMAT_ARGB32,
-        inst->width,
-        inst->height,
-        inst->width * sizeof(uint32_t));
-}
-
 void f0r_update(f0r_instance_t instance, double time,
 		const uint32_t* inframe, uint32_t* outframe)
 {
@@ -134,7 +120,22 @@ void f0r_update(f0r_instance_t instance, double time,
   
     uint32_t* dst = outframe;
     const uint32_t* src = inframe;
+    
+    // TODO explain this assertion
+    assert( ( inst->width * sizeof(uint32_t) ) ==
+            cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, inst->width) );
+    cairo_surface_t* pSurface = cairo_image_surface_create_for_data(
+        outframe,
+        CAIRO_FORMAT_ARGB32,
+        inst->width,
+        inst->height,
+        inst->width * sizeof(uint32_t));
+    assert(CAIRO_STATUS_SUCCESS == cairo_surface_status(pSurface));
+    // Create Cairo context with surface as target.
+    cairo_t* pCr = cairo_create(pSurface);
+    cairo_set_line_width(pCr, 1);
 
+    // Calculate average of pixel values in evenly spaced sections
     for (sx=0; sx<nsx; sx++)
     {
         for (sy=0; sy<nsy; sy++)
@@ -157,15 +158,32 @@ void f0r_update(f0r_instance_t instance, double time,
                     n++;
                 }
             }
+
+            // Draw a shape in that region.
+            cairo_set_source_rgb(
+                pCr,
+                (float)avgR / 255.0,
+                (float)avgG / 255.0,
+                (float)avgB / 255.0);
+            uint size = (sw/4) * rand() % 40;
+            cairo_translate(pCr, x0, y0);
+            cairo_arc(pCr, 0, 0, size, 0, 2 * M_PI);
+            // cairo_rectangle(pCr, x0, y0, size, size);
+            cairo_stroke_preserve(pCr);
+            cairo_fill(pCr);
+
+            /*
+            // Iterate each pixel in the section and fill to average
             for (i=0; i<sw; i++)
             {
                 for (j=0; j<sh; j++)
                 {
-                    // Iterate each row in the section and memset to average
                     *PIXEL_AT(outframe, x0+i, y0+j) = RGB(avgR, avgG, avgB);
                 }   
-            }
+            }*/
         }
     }
+
+    cairo_surface_destroy(pSurface);
 }
 
