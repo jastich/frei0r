@@ -15,6 +15,10 @@
 #define X(ptr, start, w) (int32_t)((ptr - start) % w)
 #define Y(ptr, start, w) (int32_t)((ptr - start) / w)
 
+typedef unsigned int BOOL;
+static const BOOL BTRUE     = 1;
+static const BOOL BFALSE    = 0;
+
 typedef unsigned int uint;
 
 typedef struct
@@ -24,17 +28,24 @@ typedef struct
     uint radius;
 } dot_info;
 
-static const uint SIZE = 30;
-static const float NUM_COLORS = 255;
-static const uint NUM_BITS_RED = 3;
-static const uint NUM_BITS_GREEN = 3;
-static const uint NUM_BITS_BLUE = 2;
-static const uint MAX_DOT_RADIUS = 15;
+static const uint SIZE              = 30;
+static const float NUM_COLORS       = 255;
+static const uint NUM_BITS_RED      = 3;
+static const uint NUM_BITS_GREEN    = 3;
+static const uint NUM_BITS_BLUE     = 2;
+static const uint MAX_DOT_RADIUS    = 15;
+
+static const uint32_t STATUS_NONE       = 0;
+static const uint32_t STATUS_ON_STACK   = 1;
+static const uint32_t STATUS_LONELY     = 2;
+static const uint32_t STATUS_SOURCE     = 3;
+static const uint32_t STATUS_GROUPED    = 4;
 
 typedef struct group_node
 {
     struct group_node* pNext;
     struct group_node* pPrev;
+    uint32_t status;
 } group_node;
 
 typedef struct
@@ -54,7 +65,6 @@ typedef struct
     uint numSectionsY;
     stack_t groupStack;
     group_node* pGroups;
-    group_node onStack;
 } plugin_instance_t;
 
 void clear(stack_t* pStack)
@@ -86,8 +96,8 @@ void push(stack_t* pStack, uint64_t value)
         pStack->pLastValue++;
         *pStack->pLastValue = value;
     }
-    printf( "Pushed %p, size=%d\n",
-            (void*)value, pStack->pLastValue-pStack->pValues+1 );
+    //printf( "Pushed %p, size=%d\n",
+    //        (void*)value, pStack->pLastValue-pStack->pValues+1 );
 }
 
 uint64_t pop(stack_t* pStack)
@@ -97,13 +107,14 @@ uint64_t pop(stack_t* pStack)
     {
         pStack->pLastValue = NULL;
     }
-    printf("Popped %p, %d items remaining on stack\n", (void*)retval,
-           NULL != pStack->pLastValue ? pStack->pLastValue - pStack->pValues : 0);
+    //printf("Popped %p, %d items remaining on stack\n", (void*)retval,
+    //       NULL != pStack->pLastValue ? pStack->pLastValue - pStack->pValues : 0);
     return retval;
 }
 
 int f0r_init()
 {
+    printf("Init\n");
     return 1;
 }
 
@@ -218,61 +229,93 @@ void flatten(plugin_instance_t* pInst, const uint32_t* pInBuffer, uint32_t* pOut
     }
 }
 
-char* pBase;
+static const int RECURSION_LIMIT = 1000;
 
-void searchPx(
+BOOL searchPx(
     plugin_instance_t* pInst, uint32_t* pFrame,
     int32_t x, int32_t y, uint32_t color,
-    group_node** ppLast)
+    group_node** ppLast, int stackDepth);
+
+BOOL searchAround(
+    plugin_instance_t* pInst, uint32_t* pFrame,
+    int32_t x, int32_t y, uint32_t color,
+    group_node** ppLast, int stackDepth)
 {
+    group_node* pCurr = PIXEL_AT(pInst->pGroups, x, y, pInst->width);
+    //printf("Searching around x=%d, y=%d\n, pPrev=%p, pNext=%p\n",
+    //       x, y, pCurr->pPrev, pCurr->pNext);
+
+    BOOL retval = BFALSE;
+    // Search each pixel above, below, left, and right of it.
+#if 0
+    if (x - 1 >= 0)
+    {
+        retval = searchPx(
+            pInst, pFrame, x-1, y, color, ppLast, stackDepth+1);
+    }
+    if (y - 1 >= 0)
+    {
+        retval |= searchPx(
+            pInst, pFrame, x, y-1, color, ppLast, stackDepth+1);
+    }
+#endif
+    if (x + 1 < pInst->width)
+    {
+        retval |= searchPx(
+            pInst, pFrame, x+1, y, color, ppLast, stackDepth+1);
+    }
+    if (y + 1 < pInst->height)
+    {
+        retval |= searchPx(
+            pInst, pFrame, x, y+1, color, ppLast, stackDepth+1);
+    }
+    return retval;
+}
+
+/// @returns BTRUE if stack depth limit hit
+BOOL searchPx(
+    plugin_instance_t* pInst, uint32_t* pFrame,
+    int32_t x, int32_t y, uint32_t color,
+    group_node** ppLast, int stackDepth)
+{
+    BOOL retval = BFALSE;
+
     uint32_t* pCurrPx = PIXEL_AT(pFrame, x, y, pInst->width);
-    printf("Stack: %d\n", ((char*)&pCurrPx)-pBase);
     group_node* pCurr = pInst->pGroups + (pCurrPx-pFrame);
-    printf( "x=%d y=%d prev=%p next=%p px=0x%x color=0x%x\n",
-            x, y, pCurr->pPrev, pCurr->pNext, *pCurrPx,
-            color );
-    if (color == *pCurrPx)
+    //printf( "x=%d y=%d prev=%p next=%p px=0x%x color=0x%x\n",
+    //        x, y, pCurr->pPrev, pCurr->pNext, *pCurrPx,
+    //        color );
+    if (stackDepth < RECURSION_LIMIT && color == *pCurrPx)
     {
         // If the pixel hasn't already been grouped...
-        if (((NULL == pCurr->pNext) && (NULL == pCurr->pPrev)) ||
-            (&pInst->onStack == pCurr->pPrev))
+        if ((pCurr->status == STATUS_NONE) ||
+            (pCurr->status == STATUS_ON_STACK))
         {
             // Join it to the group of the previous pixel.
+            pCurr->status = STATUS_GROUPED;
+            (*ppLast)->status = STATUS_GROUPED;
             (*ppLast)->pNext = pCurr;
             pCurr->pPrev = *ppLast;
             *ppLast = pCurr;
-            // Search each pixel above, below, left, and right of it.
-            if (x - 1 >= 0)
-            {
-                searchPx(pInst, pFrame, x-1, y, color, ppLast);
-            }
-            if (y - 1 >= 0)
-            {
-                searchPx(pInst, pFrame, x, y-1, color, ppLast);
-            }
-            if (x + 1 < pInst->width)
-            {
-                searchPx(pInst, pFrame, x+1, y, color, ppLast);
-            }
-            if (y + 1 < pInst->height)
-            {
-                searchPx(pInst, pFrame, x, y+1, color, ppLast);
-            }
+            retval = searchAround(
+                pInst, pFrame, x, y, color, ppLast, stackDepth);
         }
     }
-    else if ((NULL == pCurr->pNext) && (NULL == pCurr->pPrev))
+    else if ( pCurr->status == STATUS_NONE )
     {
-        // Push pixel to stack if it isn't a member of a group and doesn't
-        // match the current group.
+        // Push pixel to stack if it isn't a member of a group, isn't already
+        // on the stack, and doesn't match the current group.
         push(&pInst->groupStack, (uint64_t)pCurr);
-        pCurr->pPrev = &pInst->onStack;
+        // Set flag to indicate that group is on stack.
+        pCurr->status = STATUS_ON_STACK;
     }
+
+    return (retval == BFALSE && stackDepth < RECURSION_LIMIT) ? BFALSE : BTRUE;
 }
 
 void f0r_update(f0r_instance_t instance, double time,
 		const uint32_t* inframe, uint32_t* outframe)
 {
-    printf("f0r_update\n");
     assert(instance);
     plugin_instance_t* pInst = (plugin_instance_t*)instance;
     memset(pInst->pGroups, 0, sizeof(group_node)*pInst->width*pInst->height);
@@ -281,38 +324,68 @@ void f0r_update(f0r_instance_t instance, double time,
     // Reduce number of colors in the image.
     flatten(pInst, inframe, outframe);
 
-    int i, j, numzeros=0;
-    for (i=0; i<pInst->width*pInst->height; i++)
-    {
-        if (outframe[i] == 0) numzeros++;
-    }
-    printf("numzeros = %d", numzeros);
-
-    pBase = (char*)(&i);
-
     // Push one pixel to the stack to get the search started.  Pixels will be
     // pushed and popped from the stack until all pixels are processed.
     push(&pInst->groupStack, (uint64_t)pInst->pGroups);
     // Flag the pixel for being on the stack.
-    pInst->pGroups->pPrev = &pInst->onStack;
+    pInst->pGroups->status = STATUS_ON_STACK;
 
     while (!isEmpty(&pInst->groupStack))
     {
-        // Pop next pixel off stack.  Pointer points to last pixel in
-        // current group.
+        // Pop next pixel off stack.  This pointer on the stack will be used
+        // to point to the last group_node in the linked list as the group is
+        // formed.
         group_node* pLast = (group_node*)pop(&pInst->groupStack);
         // Only process this pixel if it hasn't already been grouped by a
         // previous search path.
-        if (pLast->pPrev == &pInst->onStack )
+        if ( pLast->status == STATUS_ON_STACK )
         {
             // Clear "on stack" flag now that it has been popped.
-            pLast->pPrev = NULL;
+            pLast->status = STATUS_SOURCE;
+            group_node* pSavedLast = pLast;
             int32_t x = X(pLast, pInst->pGroups, pInst->width); 
             int32_t y = Y(pLast, pInst->pGroups, pInst->width);
+            printf("Popped x=%d, y=%d\n", x, y);
             uint32_t color = *(outframe + (pLast-pInst->pGroups));
-            printf("Index = %d\n", pLast-pInst->pGroups);
-            searchPx(pInst, outframe, x, y, color, &pLast);
+            searchAround(pInst, outframe, x, y, color, &pLast, 0);
+            if ( pSavedLast->status == STATUS_SOURCE )
+            {
+                pSavedLast->status = STATUS_LONELY;
+            }
         }
     }
+
+    group_node** heads = (group_node**)calloc(
+        pInst->height * pInst->width, sizeof(group_node*));
+    int len = pInst->width*pInst->height;
+    int i,j;
+    int numHeads = 0;
+    for (i=0; i<len; i++)
+    {
+        group_node* pHead = pInst->pGroups + i;
+        // Find the head of this group
+        while (pHead->pPrev != NULL)
+        {
+            pHead = pHead->pPrev;
+        }
+        // If the head is already in the set, carry on.
+        // Otherwise add it to the set and increment the number of heads.
+        for (j=0; j<pInst->width*pInst->height; j++)
+        {
+            if (heads[j] == pHead)
+            {
+                // already in set
+                break;
+            }
+            else if (heads[j] == NULL)
+            {
+                heads[j] = pHead;
+                numHeads++;
+            }
+        }
+    }
+    free(heads);
+    printf("Frame has %d groups!", numHeads);
+
 }
 
