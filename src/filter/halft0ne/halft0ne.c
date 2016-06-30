@@ -65,6 +65,7 @@ typedef struct
     uint numSectionsY;
     stack_t groupStack;
     group_node* pGroups;
+    group_node** ppHeads;
 } plugin_instance_t;
 
 void clear(stack_t* pStack)
@@ -149,6 +150,8 @@ f0r_instance_t f0r_construct(uint width, uint height)
     inst->numSectionsY = inst->height / inst->sectionHeight;
     init(&inst->groupStack, width*height);
     inst->pGroups = (group_node*)calloc(width*height, sizeof(group_node));
+    inst->ppHeads = (group_node**)calloc(
+        inst->height * inst->width, sizeof(group_node*));
     return (f0r_instance_t)inst;
 }
 
@@ -200,10 +203,14 @@ uint32_t rebase(uint32_t value, uint32_t oldBase, uint32_t newBase)
 {
     uint32_t sectorWidth = oldBase / newBase;
     uint32_t remainder = value % sectorWidth;
-    uint32_t retval = value - remainder;
+    uint32_t retval;
     if (remainder > sectorWidth / 2)
     {
-        retval += remainder + sectorWidth;
+        retval = value + (sectorWidth - remainder);
+    }
+    else
+    {
+        retval = value - remainder;
     }
     return retval;
 }
@@ -217,7 +224,7 @@ void flatten(plugin_instance_t* pInst, const uint32_t* pInBuffer, uint32_t* pOut
     {
         for (j=0; j<pInst->height; j++)
         {
-            static const uint NUM_COLORS = 7;
+            static const uint NUM_COLORS = 1;
             const uint32_t* px = PIXEL_AT(pInBuffer, i, j, pInst->width);
             uint32_t* pxOut = PIXEL_AT(pOutBuffer, i, j, pInst->width);
             uint32_t oldBase = 0xFF;
@@ -319,7 +326,9 @@ void f0r_update(f0r_instance_t instance, double time,
     assert(instance);
     plugin_instance_t* pInst = (plugin_instance_t*)instance;
     memset(pInst->pGroups, 0, sizeof(group_node)*pInst->width*pInst->height);
+    memset(pInst->ppHeads, 0, sizeof(group_node**)*pInst->width*pInst->height);
     clear(&(pInst->groupStack));
+    uint numHeads = 0;
 
     // Reduce number of colors in the image.
     flatten(pInst, inframe, outframe);
@@ -342,12 +351,17 @@ void f0r_update(f0r_instance_t instance, double time,
         {
             // Clear "on stack" flag now that it has been popped.
             pLast->status = STATUS_SOURCE;
+            // The pixel is a head of a chain of group nodes.
+            pInst->ppHeads[numHeads++] = pLast;
+            // Retain a pointer to the seed pixel.
             group_node* pSavedLast = pLast;
             int32_t x = X(pLast, pInst->pGroups, pInst->width); 
             int32_t y = Y(pLast, pInst->pGroups, pInst->width);
-            printf("Popped x=%d, y=%d\n", x, y);
+            //printf("Popped x=%d, y=%d\n", x, y);
             uint32_t color = *(outframe + (pLast-pInst->pGroups));
             searchAround(pInst, outframe, x, y, color, &pLast, 0);
+            // If STATUS_SOURCE wasn't changed to STATUS_GROUPED, then this
+            // pixel is lonely.
             if ( pSavedLast->status == STATUS_SOURCE )
             {
                 pSavedLast->status = STATUS_LONELY;
@@ -355,37 +369,6 @@ void f0r_update(f0r_instance_t instance, double time,
         }
     }
 
-    group_node** heads = (group_node**)calloc(
-        pInst->height * pInst->width, sizeof(group_node*));
-    int len = pInst->width*pInst->height;
-    int i,j;
-    int numHeads = 0;
-    for (i=0; i<len; i++)
-    {
-        group_node* pHead = pInst->pGroups + i;
-        // Find the head of this group
-        while (pHead->pPrev != NULL)
-        {
-            pHead = pHead->pPrev;
-        }
-        // If the head is already in the set, carry on.
-        // Otherwise add it to the set and increment the number of heads.
-        for (j=0; j<pInst->width*pInst->height; j++)
-        {
-            if (heads[j] == pHead)
-            {
-                // already in set
-                break;
-            }
-            else if (heads[j] == NULL)
-            {
-                heads[j] = pHead;
-                numHeads++;
-            }
-        }
-    }
-    free(heads);
-    printf("Frame has %d groups!", numHeads);
-
+    printf("numHeads: %d\n", numHeads);
 }
 
